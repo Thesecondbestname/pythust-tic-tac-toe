@@ -33,31 +33,31 @@ type Action = Box<(dyn Fn(Game) -> Game + Send + Sync + 'static)>;
 #[pyclass]
 struct State {
     game: Game,
-    actions: Action,
-    ops: Option<String>
+    stack: Action,
+    ops: Vec<Action>
 }
 impl State {
     fn start() -> Self {
         State {
             game: Game::start([Player::Circle, Player::Cross]),
-            actions: Box::new(move |game| game),
-            ops: None,
+            stack: Box::new(move |game| game),
+            ops: vec![],
         }
     }
     fn then(self, f: fn(Game) -> Game) -> Self {
         Self {
-            actions: Box::new(move |game| f((self.actions)(game))),
+            stack: Box::new(move |game| f((self.stack)(game))),
             ..self
         }
     }
     fn and(self, f: fn(Game) -> Game) -> Self {
         Self {
-            actions: Box::new(move |game| f((self.actions)(game))),
+            stack: Box::new(move |game| f((self.stack)(game))),
             ..self
         }
     }
     fn quit(self) -> () {
-        (self.actions)(self.game);
+        (self.stack)(self.game);
     }
     fn until(mut self, predicate: fn(&Game) -> bool) -> State {
         fn rec(game: Game, predicate: fn(&Game) -> bool, a: &Action) -> Game {
@@ -66,7 +66,7 @@ impl State {
                 false => rec((a)(game), predicate, a),
             }
         }
-        self.game = rec(self.game, predicate, &self.actions);
+        self.game = rec(self.game, predicate, &self.stack);
         self
     }
 }
@@ -98,8 +98,22 @@ fn print(game: Game) -> Game {
     );
     game
 }
-fn try_update(mut game: Game, inp: String) -> Option<Game> {
-    let mut coords = inp.chars().skip(2);
+// fn update(mut game: Game) -> Option<Game> {
+//     game.board[a].0[b] = Field::Player(game.turn[0]);
+//     Some(game)
+// }
+fn advance_turn(game: Game) -> Game {
+    let mut a = game.turn;
+    a.swap(0, a.len());
+    Game {
+        turn: a,
+        board: game.board,
+    }
+}
+/// Formats the sum of two numbers as string.
+// #[pyfunction]
+fn get_user(input: String) -> Option<Coordinate> {
+    let mut coords = input.chars().skip(2);
     let alpha = coords.next()?;
     let num = coords.next()?;
     let a = match alpha {
@@ -112,18 +126,17 @@ fn try_update(mut game: Game, inp: String) -> Option<Game> {
         0..=3 => num as usize,
         _ => return None,
     };
-    game.board[a].0[b] = Field::Player(game.turn[0]);
-    Some(game)
+    Some(Coordinate(a,b))
 }
-fn advance_turn(game: Game) -> Game {
-    let mut a = game.turn;
-    a.swap(0, a.len());
-    Game {
-        turn: a,
-        board: game.board,
+struct Coordinate(usize, usize);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test() -> () {
+        // State::start().then(print).then(get_user(input())).until(its_valid)
     }
 }
-
 /// Formats the sum of two numbers as string.
 #[pyfunction]
 fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
@@ -135,14 +148,6 @@ fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
 fn tic_tac_toe(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     Ok(())
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn test() -> () {
-        State::start().then(print).quit();
-    }
 }
 impl_display!(Row, |s: &Row| {
     format!(
