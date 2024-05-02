@@ -1,0 +1,10 @@
+Game
+    .start_by(asking(for_starting_player))
+    .and(print_the_board)
+        .then(ask(for_player(input())))
+        .until(that_input_is_valid)
+        .then(update_the_board)
+        .and(print_the_board)
+        .until(someone_won)
+    .finally(ask(if_they_want_again))
+    .until(they_dont_anymore)
