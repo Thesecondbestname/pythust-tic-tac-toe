@@ -1,6 +1,8 @@
+#![feature(variant_count)]
+use std::mem;
 use pyo3::prelude::*;
 const BOARDSIZE: usize = 3;
-const PLAYERS: usize = 2;
+const PLAYERS: usize = mem::variant_count::<Player>();
 const PADDING: usize = BOARDSIZE * 3 + 2;
 struct Render;
 struct Update;
@@ -32,12 +34,14 @@ type Action = Box<(dyn Fn(Game) -> Game + Send + Sync + 'static)>;
 struct State {
     game: Game,
     actions: Action,
+    ops: Option<String>
 }
 impl State {
     fn start() -> Self {
         State {
-            game: Game::start(Player::Circle),
+            game: Game::start([Player::Circle, Player::Cross]),
             actions: Box::new(move |game| game),
+            ops: None,
         }
     }
     fn then(self, f: fn(Game) -> Game) -> Self {
@@ -52,7 +56,7 @@ impl State {
             ..self
         }
     }
-    fn end(self) -> () {
+    fn quit(self) -> () {
         (self.actions)(self.game);
     }
     fn until(mut self, predicate: fn(&Game) -> bool) -> State {
@@ -68,10 +72,10 @@ impl State {
 }
 struct Game {
     board: [Row; BOARDSIZE],
-    turn: Player,
+    turn: [Player; PLAYERS],
 }
 impl Game {
-    fn start(p: Player) -> Self {
+    fn start(p: [Player; PLAYERS]) -> Self {
         Game {
             board: [Row::new(); BOARDSIZE],
             turn: p,
@@ -108,12 +112,14 @@ fn try_update(mut game: Game, inp: String) -> Option<Game> {
         0..=3 => num as usize,
         _ => return None,
     };
-    game.board[a].0[b] = Field::Player(game.turn.clone());
+    game.board[a].0[b] = Field::Player(game.turn[0]);
     Some(game)
 }
-fn advance_turn(game: Game, player: Player) -> Game {
+fn advance_turn(game: Game) -> Game {
+    let mut a = game.turn;
+    a.swap(0, a.len());
     Game {
-        turn: player,
+        turn: a,
         board: game.board,
     }
 }
@@ -135,7 +141,7 @@ mod tests {
     use super::*;
     #[test]
     fn test() -> () {
-        State::start().then(print).end();
+        State::start().then(print).quit();
     }
 }
 impl_display!(Row, |s: &Row| {
