@@ -1,6 +1,6 @@
 #![feature(variant_count)]
-use std::mem;
 use pyo3::prelude::*;
+use std::mem;
 const BOARDSIZE: usize = 3;
 const PLAYERS: usize = mem::variant_count::<Player>();
 const PADDING: usize = BOARDSIZE * 3 + 2;
@@ -29,50 +29,99 @@ impl Row {
         self.0.iter().all(|a| a == &init)
     }
 }
+struct Until<T> {
+    repeatable_action: fn() -> String,
+    raw_data: String,
+    state: State
+}
+struct RepeatUntil<T> {
+    repeatable_action: fn() -> String,
+    raw_data: String,
+    state: State,
+    predicate: Option<T>
+}
+impl<Player> RepeatUntil<Player> {
+    fn repeat_by(mut self, fallback: fn(State) -> State) -> State {
+        loop {
+            match predicate(&l) {
+                true => break,
+                false => {
+                    fallback(self.state);
+                    self.state.game = (self.state.stack[self.state.level])(self.state.game);
+                    self.raw_data
+                    continue;
+                }
+            }
+        }
+        self.game = l;
+    }}
+impl<T> Until<T> {
+    fn until(self, predicate: fn(&String) -> Option<T>) -> RepeatUntil<T> {
+        RepeatUntil {
+            raw_data: self.raw_data,
+            state: self.state,
+            repeatable_action: self.repeatable_action,
+            predicate
+        }
+    }
+}
 type Action = Box<(dyn Fn(Game) -> Game + Send + Sync + 'static)>;
 #[pyclass]
 struct State {
     game: Game,
-    stack: Action,
-    ops: Vec<Action>
+    stack: Vec<Action>,
+    level: usize,
 }
+#[pymethods]
 impl State {
-    fn start() -> Self {
-        State {
-            game: Game::start([Player::Circle, Player::Cross]),
-            stack: Box::new(move |game| game),
-            ops: vec![],
-        }
-    }
-    fn then(self, f: fn(Game) -> Game) -> Self {
-        Self {
-            stack: Box::new(move |game| f((self.stack)(game))),
-            ..self
-        }
+    fn start_by(get_inp: fn() -> String) -> Until<Player> {
+        let player = &get_inp()[..];
+        let initial_state = State { game: Game::default(), stack: vec![], level: 0};
+         Until::<Player> {repeatable_action:get_inp, raw_data:player.to_string(), state: initial_state}}
+    
+    
+
+    fn after_that(mut self, f: fn(Game) -> Game) -> Self {
+        self.stack.push(Box::new(move |game| f(game)));
+        self.level += 1;
+        self
     }
     fn and(self, f: fn(Game) -> Game) -> Self {
         Self {
-            stack: Box::new(move |game| f((self.stack)(game))),
+            stack: vec![Box::new(move |game| f((self.stack[self.level])(game)))],
             ..self
         }
     }
-    fn quit(self) -> () {
-        (self.stack)(self.game);
+    fn finally(self) -> () {
+        (self.stack)[0](self.game);
     }
     fn until(mut self, predicate: fn(&Game) -> bool) -> State {
-        fn rec(game: Game, predicate: fn(&Game) -> bool, a: &Action) -> Game {
-            match predicate(&game) {
-                true => return game,
-                false => rec((a)(game), predicate, a),
+        let mut l = self.game;
+        loop {
+            match predicate(&l) {
+                true => break,
+                false => {
+                    l = (self.stack[self.level])(l);
+                    continue;
+                }
             }
         }
-        self.game = rec(self.game, predicate, &self.stack);
+        self.game = l;
         self
     }
 }
 struct Game {
     board: [Row; BOARDSIZE],
     turn: [Player; PLAYERS],
+}
+
+impl Default for Game {
+    fn default() -> Self {
+        Game {
+            board: [Row::new(); BOARDSIZE],
+            turn: [Player::Circle, Player::Cross],
+        }
+    }
 }
 impl Game {
     fn start(p: [Player; PLAYERS]) -> Self {
@@ -104,11 +153,20 @@ fn print(game: Game) -> Game {
 // }
 fn advance_turn(game: Game) -> Game {
     let mut a = game.turn;
-    a.swap(0, a.len());
+    let len = a.len();
+    a.swap(0, len);
     Game {
         turn: a,
         board: game.board,
     }
+}
+fn input_player_is_valid(inp: String) -> bool {
+    let player_order = match &inp[..] {
+        "Circle" | "O" => [Player::Circle, Player::Cross],
+        "Cross" | "X" => [Player::Cross, Player::Circle],
+        e => Err(e),
+    };
+    player_order
 }
 /// Formats the sum of two numbers as string.
 // #[pyfunction]
@@ -126,7 +184,7 @@ fn get_user(input: String) -> Option<Coordinate> {
         0..=3 => num as usize,
         _ => return None,
     };
-    Some(Coordinate(a,b))
+    Some(Coordinate(a, b))
 }
 struct Coordinate(usize, usize);
 #[cfg(test)]
@@ -134,6 +192,7 @@ mod tests {
     use super::*;
     #[test]
     fn test() -> () {
+        State::start_by(|| "O".to_owned()).until(input_player_is_valid);
         // State::start().then(print).then(get_user(input())).until(its_valid)
     }
 }
