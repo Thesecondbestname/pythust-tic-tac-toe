@@ -14,6 +14,6 @@ Game
 
 
     
-.start_ask(beginning_player(input()))) # Until {repeatable_action, action_result, State}
-    .until(input_is_valid_player) # RepeatUntil {repeatable_action, predicate(action_result) -> Option<T>, State}
+.start_ask(beginning_player(input()))) # Until {action_result, State}
+    .until(input_is_valid_player) # RepeatUntil {stack, predicate(action_result) -> Option<T>, State}
     .repeating_by(asking_again) # for loop

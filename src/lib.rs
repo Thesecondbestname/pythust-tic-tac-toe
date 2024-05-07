@@ -1,96 +1,104 @@
 #![feature(variant_count)]
-use pyo3::prelude::*;
-use std::mem;
 const BOARDSIZE: usize = 3;
 const PLAYERS: usize = mem::variant_count::<Player>();
 const PADDING: usize = BOARDSIZE * 3 + 2;
-struct Render;
-struct Update;
-struct Ready;
-struct Over;
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Player {
-    Circle,
-    Cross,
-}
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum Field {
-    Empty,
-    Player(Player),
-}
-#[derive(Copy, Clone, PartialEq, Eq)]
-struct Row([Field; BOARDSIZE]);
-impl Row {
-    fn new() -> Self {
-        Row([Field::Empty; BOARDSIZE])
-    }
-    fn check_win(&self) -> bool {
-        let init = self.0[0];
-        self.0.iter().all(|a| a == &init)
-    }
-}
+mod tic;
+use crate::tic::Game;
+use crate::tic::Player;
+use core::mem;
+use pyo3::prelude::*;
+use std::marker::PhantomData;
+use std::sync::Arc;
 struct Until<T> {
-    repeatable_action: fn() -> String,
-    raw_data: String,
-    state: State
+    recall_stack: InpAction,
+    state: State,
+    p: PhantomData<T>,
 }
 struct RepeatUntil<T> {
-    repeatable_action: fn() -> String,
-    raw_data: String,
+    repeated_call: InpAction,
     state: State,
-    predicate: Option<T>
+    predicate: fn(&String) -> Option<T>,
 }
-impl<Player> RepeatUntil<Player> {
-    fn repeat_by(mut self, fallback: fn(State) -> State) -> State {
-        loop {
-            match predicate(&l) {
-                true => break,
-                false => {
-                    fallback(self.state);
-                    self.state.game = (self.state.stack[self.state.level])(self.state.game);
-                    self.raw_data
-                    continue;
+impl RepeatUntil<[Player; 2]> {
+    // we want to do this in closure form (for the memes)
+    fn repeat_by(mut self, fallback: fn() -> String) -> State {
+        let call = Arc::clone(&self.state.stack[self.state.level]);
+        let closure = move |game| {
+            let mut game = game;
+            let mut result = (self.repeated_call)(game);
+            loop {
+                match (self.predicate)(&result) {
+                    Some(b) => {
+                        return Game {
+                            turn: b,
+                            ..self.state.game
+                        }
+                    }
+                    None => {
+                        game = call(game);
+                        result = fallback();
+                    }
                 }
             }
-        }
-        self.game = l;
-    }}
+        };
+        self.state.stack[self.state.level] = Arc::new(closure);
+        State { ..self.state }
+    }
+}
 impl<T> Until<T> {
     fn until(self, predicate: fn(&String) -> Option<T>) -> RepeatUntil<T> {
         RepeatUntil {
-            raw_data: self.raw_data,
+            repeated_call: self.recall_stack,
             state: self.state,
-            repeatable_action: self.repeatable_action,
-            predicate
+            predicate,
         }
     }
 }
-type Action = Box<(dyn Fn(Game) -> Game + Send + Sync + 'static)>;
+type Action = Arc<(dyn Fn(Game) -> Game + Send + Sync + 'static)>;
+type InpAction = Arc<(dyn Fn(Game) -> String + Send + Sync + 'static)>;
 #[pyclass]
 struct State {
     game: Game,
     stack: Vec<Action>,
     level: usize,
 }
+impl Default for State {
+    fn default() -> Self {
+        State {
+            game: Game::default(),
+            stack: vec![Arc::new(|game| game)],
+            level: 0,
+        }
+    }
+}
 #[pymethods]
 impl State {
-    fn start_by(get_inp: fn() -> String) -> Until<Player> {
-        let player = &get_inp()[..];
-        let initial_state = State { game: Game::default(), stack: vec![], level: 0};
-         Until::<Player> {repeatable_action:get_inp, raw_data:player.to_string(), state: initial_state}}
-    
-    
+    fn start_by(get_inp: fn() -> String) -> Until<[Player; 2]> {
+        let state = State::default();
+        Until::<[Player; 2]> {
+            recall_stack: Arc::new(move |game| get_inp()),
+            state,
+            p: PhantomData,
+        }
+    }
 
-    fn after_that(mut self, f: fn(Game) -> Game) -> Self {
-        self.stack.push(Box::new(move |game| f(game)));
-        self.level += 1;
-        self
+    fn after_that(&self, f: fn(Game) -> Game) -> Self {
+        let b = [self.stack, vec![Arc::new(move |game| f(game))]].concat();
+        Self {
+            game: self.game,
+            stack: b,
+            level: self.level + 1,
+        }
     }
     fn and(self, f: fn(Game) -> Game) -> Self {
         Self {
-            stack: vec![Box::new(move |game| f((self.stack[self.level])(game)))],
-            ..self
+            stack: vec![Arc::new(move |game| f(self.stack[self.level](game)))],
+            game: self.game.clone(),
+            level: self.level.clone(),
         }
+    }
+    fn call(&self, game: Game) -> Game {
+        (self.stack[self.level])(game)
     }
     fn finally(self) -> () {
         (self.stack)[0](self.game);
@@ -101,34 +109,13 @@ impl State {
             match predicate(&l) {
                 true => break,
                 false => {
-                    l = (self.stack[self.level])(l);
+                    l = self.call(l);
                     continue;
                 }
             }
         }
         self.game = l;
         self
-    }
-}
-struct Game {
-    board: [Row; BOARDSIZE],
-    turn: [Player; PLAYERS],
-}
-
-impl Default for Game {
-    fn default() -> Self {
-        Game {
-            board: [Row::new(); BOARDSIZE],
-            turn: [Player::Circle, Player::Cross],
-        }
-    }
-}
-impl Game {
-    fn start(p: [Player; PLAYERS]) -> Self {
-        Game {
-            board: [Row::new(); BOARDSIZE],
-            turn: p,
-        }
     }
 }
 fn print(game: Game) -> Game {
@@ -160,11 +147,11 @@ fn advance_turn(game: Game) -> Game {
         board: game.board,
     }
 }
-fn input_player_is_valid(inp: String) -> bool {
+fn input_player_is_valid(inp: &String) -> Option<[Player; 2]> {
     let player_order = match &inp[..] {
-        "Circle" | "O" => [Player::Circle, Player::Cross],
-        "Cross" | "X" => [Player::Cross, Player::Circle],
-        e => Err(e),
+        "Circle" | "O" => Some([Player::Circle, Player::Cross]),
+        "Cross" | "X" => Some([Player::Cross, Player::Circle]),
+        e => None,
     };
     player_order
 }
@@ -192,7 +179,9 @@ mod tests {
     use super::*;
     #[test]
     fn test() -> () {
-        State::start_by(|| "O".to_owned()).until(input_player_is_valid);
+        State::start_by(|| "O".to_owned())
+            .until(input_player_is_valid)
+            .rep;
         // State::start().then(print).then(get_user(input())).until(its_valid)
     }
 }
@@ -207,35 +196,4 @@ fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
 fn tic_tac_toe(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
     Ok(())
-}
-impl_display!(Row, |s: &Row| {
-    format!(
-        "{}|",
-        s.0.iter()
-            .fold(String::new(), |acc, a| format!("{acc}| {a}"))
-    )
-});
-impl_display!(Field, |s: &Field| {
-    match s {
-        Field::Player(a) => format!("{a}"),
-        Field::Empty => " ".to_owned(),
-    }
-});
-impl_display!(Player, |s: &Player| {
-    match s {
-        Player::Circle => "O",
-        Player::Cross => "X",
-    }
-});
-#[macro_export]
-/// Takes a struct name as first argument and a closure of it's Struct
-/// Synopsys: (`struct_name`, |s: &`struct_name`| match s{...})
-macro_rules! impl_display {
-    ($struct_name:ident, $write_calls:expr) => {
-        impl std::fmt::Display for $struct_name {
-            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(f, "{}", &$write_calls(&self))
-            }
-        }
-    };
 }
