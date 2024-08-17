@@ -1,6 +1,9 @@
+use core::mem;
 use crate::impl_display;
-use crate::BOARDSIZE;
-use crate::PLAYERS;
+const BOARDSIZE: usize = 3;
+const PLAYERS: usize = mem::variant_count::<Player>();
+const PADDING: usize = BOARDSIZE * 3 + 2;
+struct Coordinate(usize, usize);
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Player {
     Circle,
@@ -63,6 +66,56 @@ impl_display!(Player, |s: &Player| {
         Player::Cross => "X",
     }
 });
+fn print(game: Game) -> Game {
+    println!(
+        "{0}\n{1:-<width$}",
+        game.board
+            .iter()
+            .enumerate()
+            .fold(String::new(), |acc, (b, a)| format!(
+                "{acc}\n{:-<width$}\n{b}{a}",
+                "",
+                width = PADDING
+            )),
+        "",
+        width = PADDING,
+    );
+    game
+}
+fn advance_turn(game: Game) -> Game {
+    let mut a = game.turn;
+    let len = a.len();
+    a.swap(0, len);
+    Game {
+        turn: a,
+        board: game.board,
+    }
+}
+fn input_player_is_valid(inp: &String) -> Option<[Player; 2]> {
+    let player_order = match &inp[..] {
+        "Circle" | "O" => Some([Player::Circle, Player::Cross]),
+        "Cross" | "X" => Some([Player::Cross, Player::Circle]),
+        e => None,
+    };
+    player_order
+}
+/// Formats the sum of two numbers as string.
+fn get_user(input: String) -> Option<Coordinate> {
+    let mut coords = input.chars().skip(2);
+    let alpha = coords.next()?;
+    let num = coords.next()?;
+    let a = match alpha {
+        'a' => 1,
+        'b' => 2,
+        'c' => 3,
+        _ => return None,
+    };
+    let b = match num as usize {
+        0..=3 => num as usize,
+        _ => return None,
+    };
+    Some(Coordinate(a, b))
+}
 #[macro_export]
 /// Takes a struct name as first argument and a closure of it's Struct
 /// Synopsys: (`struct_name`, |s: &`struct_name`| match s{...})

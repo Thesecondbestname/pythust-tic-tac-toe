@@ -1,199 +1,166 @@
-#![feature(variant_count)]
-const BOARDSIZE: usize = 3;
-const PLAYERS: usize = mem::variant_count::<Player>();
-const PADDING: usize = BOARDSIZE * 3 + 2;
-mod tic;
-use crate::tic::Game;
-use crate::tic::Player;
-use core::mem;
-use pyo3::prelude::*;
+#![allow(dead_code)]
+
 use std::marker::PhantomData;
-use std::sync::Arc;
-struct Until<T> {
-    recall_stack: InpAction,
-    state: State,
-    p: PhantomData<T>,
+type TransformAction<T, U> = Box<(dyn Fn(T) -> U + 'static)>;
+type Action<T> = Box<(dyn Fn(T) -> T)>;
+
+trait Call<Ret> {
+    fn call(self) -> Ret;
 }
-struct RepeatUntil<T> {
-    repeated_call: InpAction,
-    state: State,
-    predicate: fn(&String) -> Option<T>,
+// struct Act<T, U>(T, Box<(dyn Fn(T) -> U)>);
+// impl<T, U> Call<U> for Act<T,U> {
+//     fn call(self) -> U {
+//         (self.1)(self.0)
+//     }
+// }
+struct RecState<From, Fn: Call<From>, To> {
+    to_get_there: Fn,
+    go_from_here: TransformAction<From, To>,
 }
-impl RepeatUntil<[Player; 2]> {
-    // we want to do this in closure form (for the memes)
-    fn repeat_by(mut self, fallback: fn() -> String) -> State {
-        let call = Arc::clone(&self.state.stack[self.state.level]);
-        let closure = move |game| {
-            let mut game = game;
-            let mut result = (self.repeated_call)(game);
-            loop {
-                match (self.predicate)(&result) {
-                    Some(b) => {
-                        return Game {
-                            turn: b,
-                            ..self.state.game
-                        }
-                    }
-                    None => {
-                        game = call(game);
-                        result = fallback();
-                    }
-                }
-            }
-        };
-        self.state.stack[self.state.level] = Arc::new(closure);
-        State { ..self.state }
+struct State2<T> {
+    initial: T
+}
+struct InitialState<From, To> {
+    state: From,
+    go_from_here: TransformAction<From, To>
+}
+
+impl<From, To> InitialState<From, To> where InitialState<From, To>: Call<To>, From: 'static, To: 'static {
+    fn then<Next: 'static>(self, f: fn(To) -> Next) -> RecState<To, InitialState<From, To>, Next> {
+        RecState {
+            to_get_there: self,
+            go_from_here: Box::new(f),
+        }
     }
 }
-impl<T> Until<T> {
-    fn until(self, predicate: fn(&String) -> Option<T>) -> RepeatUntil<T> {
-        RepeatUntil {
-            repeated_call: self.recall_stack,
+impl<T, U: Call<T>, V> Call<V> for RecState<T, U, V> {
+    fn call(self) -> V {
+        (self.go_from_here)(self.to_get_there.call())
+    }
+}
+impl<From,To> Call<To> for InitialState<From, To> {
+    fn call(self) -> To {
+        (self.go_from_here)(self.state)
+    }
+}
+impl<To> Call<To> for State2<To> {
+    fn call(self) -> To {
+        self.initial
+    }
+}
+impl<From: 'static> State2<From> {
+    fn new(initial: From) -> Self {
+        State2 {
+            initial
+        }   
+    }
+    fn then<To: 'static>(self, f: fn(From) -> To) -> InitialState<From, To> {
+        InitialState{
+            state: self.initial,
+            go_from_here: Box::new(f),
+        }
+    }
+}
+impl<Curr, T, To>  RecState<Curr, T, To> where
+     RecState<Curr, T, To>: Call<Curr>,
+     Curr: 'static,
+     T: Call<Curr> 
+{
+    fn then<Next: 'static>(self, f: fn(Curr) -> Next) -> RecState<Curr, RecState<Curr, T, To>, Next> {
+        RecState {
+            to_get_there: self,
+            go_from_here: Box::new(f),
+        }
+    }
+    fn dbg(self) -> Curr {
+        self.call()
+    }
+}
+trait TransformType<Curr, T: Call<Curr>> {
+    fn dbg(self) -> Curr;
+    fn then<Next: 'static>(self, f: fn(Curr) -> Next) -> RecState<Curr, T, Next>;
+    // fn until<V: 'static>(self, transformation: fn(&I) -> Option<V>) -> Until<I,Target>;
+}
+
+impl<Curr, T> TransformType<Curr, T> for T where Curr: 'static, T: Call<Curr> {
+    fn dbg(self) -> Curr {
+        self.call()
+    }
+    fn then<Next: 'static>(self, f: fn(Curr) -> Next) -> RecState<Curr, T, Next> {
+        RecState {
+            to_get_there: self,
+            go_from_here: Box::new(f),
+        }
+    }
+}
+
+struct State<T> where T: 'static + Default {
+    state: T,
+    actions: Vec<Action<T>>,
+}
+trait Transformation<T> {
+    type Output;
+    fn dbg(self) -> T;
+    fn run(self);
+    fn then(self, f: fn(T) -> T) -> Self::Output;
+    fn and(self, f: fn(T) -> T) -> Self::Output;
+}
+
+impl<T: Default + std::fmt::Debug> Transformation<T> for State<T> {
+    type Output = State<T>;
+    fn dbg(self) -> T {
+        let mut state = self.state;
+        let len = self.actions.len();
+        for f in self.actions {
+            state = f(state);
+            dbg!(&state, len);
+        }
+        state
+    }
+    fn then(self, f: fn(T) -> T) -> Self::Output {
+        let mut a = self.actions;
+        a.push(Box::new(f));
+        Self {
             state: self.state,
-            predicate,
+            actions: a,
         }
     }
-}
-type Action = Arc<(dyn Fn(Game) -> Game + Send + Sync + 'static)>;
-type InpAction = Arc<(dyn Fn(Game) -> String + Send + Sync + 'static)>;
-#[pyclass]
-struct State {
-    game: Game,
-    stack: Vec<Action>,
-    level: usize,
-}
-impl Default for State {
-    fn default() -> Self {
-        State {
-            game: Game::default(),
-            stack: vec![Arc::new(|game| game)],
-            level: 0,
+    fn and(self, f: fn(T) -> T) -> Self::Output {
+        let mut actions = self.actions;
+        let last_act = actions.pop().expect("Should be initialized with at least one in the actions array");
+        actions.push(Box::new(move |state| f(last_act(state))));
+        Self {
+            actions,
+            ..self
         }
     }
-}
-#[pymethods]
-impl State {
-    fn start_by(get_inp: fn() -> String) -> Until<[Player; 2]> {
-        let state = State::default();
-        Until::<[Player; 2]> {
-            recall_stack: Arc::new(move |game| get_inp()),
-            state,
-            p: PhantomData,
+    fn run(self) {
+        let mut state = self.state;
+        for f in self.actions {
+            state = f(state)
         }
     }
 
-    fn after_that(&self, f: fn(Game) -> Game) -> Self {
-        let b = [self.stack, vec![Arc::new(move |game| f(game))]].concat();
-        Self {
-            game: self.game,
-            stack: b,
-            level: self.level + 1,
-        }
-    }
-    fn and(self, f: fn(Game) -> Game) -> Self {
-        Self {
-            stack: vec![Arc::new(move |game| f(self.stack[self.level](game)))],
-            game: self.game.clone(),
-            level: self.level.clone(),
-        }
-    }
-    fn call(&self, game: Game) -> Game {
-        (self.stack[self.level])(game)
-    }
-    fn finally(self) -> () {
-        (self.stack)[0](self.game);
-    }
-    fn until(mut self, predicate: fn(&Game) -> bool) -> State {
-        let mut l = self.game;
-        loop {
-            match predicate(&l) {
-                true => break,
-                false => {
-                    l = self.call(l);
-                    continue;
-                }
-            }
-        }
-        self.game = l;
-        self
-    }
 }
-fn print(game: Game) -> Game {
-    println!(
-        "{0}\n{1:-<width$}",
-        game.board
-            .iter()
-            .enumerate()
-            .fold(String::new(), |acc, (b, a)| format!(
-                "{acc}\n{:-<width$}\n{b}{a}",
-                "",
-                width = PADDING
-            )),
-        "",
-        width = PADDING,
-    );
-    game
-}
-// fn update(mut game: Game) -> Option<Game> {
-//     game.board[a].0[b] = Field::Player(game.turn[0]);
-//     Some(game)
-// }
-fn advance_turn(game: Game) -> Game {
-    let mut a = game.turn;
-    let len = a.len();
-    a.swap(0, len);
-    Game {
-        turn: a,
-        board: game.board,
-    }
-}
-fn input_player_is_valid(inp: &String) -> Option<[Player; 2]> {
-    let player_order = match &inp[..] {
-        "Circle" | "O" => Some([Player::Circle, Player::Cross]),
-        "Cross" | "X" => Some([Player::Cross, Player::Circle]),
-        e => None,
-    };
-    player_order
-}
-/// Formats the sum of two numbers as string.
-// #[pyfunction]
-fn get_user(input: String) -> Option<Coordinate> {
-    let mut coords = input.chars().skip(2);
-    let alpha = coords.next()?;
-    let num = coords.next()?;
-    let a = match alpha {
-        'a' => 1,
-        'b' => 2,
-        'c' => 3,
-        _ => return None,
-    };
-    let b = match num as usize {
-        0..=3 => num as usize,
-        _ => return None,
-    };
-    Some(Coordinate(a, b))
-}
-struct Coordinate(usize, usize);
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
     #[test]
-    fn test() -> () {
-        State::start_by(|| "O".to_owned())
-            .until(input_player_is_valid)
-            .rep;
-        // State::start().then(print).then(get_user(input())).until(its_valid)
+    fn test_then(){
+        assert_eq!(
+            State2::new(
+                "Call 1"
+            ).then(|arg|{println!("{arg}"); 6}).then(|arg| {println!("{arg}"); "Call 3"}).dbg(),
+         "Call 3")
     }
-}
-/// Formats the sum of two numbers as string.
-#[pyfunction]
-fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
-    Ok((a + b).to_string())
-}
-
-/// A Python module implemented in Rust.
-#[pymodule]
-fn tic_tac_toe(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
-    Ok(())
+    // #[test]
+    // fn test_and() {
+    //     assert_eq!(State2::new(
+    //         "Call 1"
+    //     ).then(|_| {println!("yees"); "Call 2"}).dbg(), "Call 2")
+    // }
+    fn play_around() {
+    }
 }
