@@ -1,16 +1,16 @@
 #![allow(dead_code)]
 
-type TransformAction<T, U> = fn(T) -> U;
+type Action<T, U> = fn(T) -> U;
 trait Call<Ret> {
     fn call(self) -> Ret;
 }
-trait TransformType<Curr, T: Call<Curr>> : Call<Curr> {
+trait Transform<Curr, T: Call<Curr>> : Call<Curr> {
     fn dbg(self) -> Curr;
     fn then<Next: 'static>(self, f: fn(Curr) -> Next) -> RecState<Curr, T, Next>;
 }
 struct RecState<From, Fn: Call<From>, To> {
     to_get_there: Fn,
-    go_from_here: TransformAction<From, To>,
+    go_from_here: Action<From, To>,
 }
 struct State<T> {
     initial: T
@@ -32,7 +32,7 @@ impl<From: 'static> State<From> {
         }   
     }
 }
-impl<Curr, T> TransformType<Curr, T> for T where Curr: 'static, T: Call<Curr> {
+impl<Curr, T> Transform<Curr, T> for T where Curr: 'static, T: Call<Curr> {
     fn dbg(self) -> Curr {
         self.call()
     }
