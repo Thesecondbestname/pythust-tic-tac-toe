@@ -1,5 +1,4 @@
-Game
-    .start_ask(for_starting_player))
+Game.start_ask(for_starting_player))
         .until(player_is_valid)
         .repeating_by(asking_again)
         .then(print_the_board)

@@ -16,34 +16,28 @@ type BorrowedAction<T, U> = for<'a> fn(&'a T) -> U;
 trait Call<Ret> {
     fn call(self) -> Ret;
 }
-trait Previous<State: Call<Prev>, Prev, Curr> {
-    fn prev(self) -> (State, impl Fn(Prev) -> Curr);
+trait Unwrapable<State: Call<Prev>, Prev, Curr> {
+    fn unwrap(self) -> (State, Action<Prev, Curr>);
 }
 trait Transform<Curr, T: Call<Curr>>: Call<Curr> {
     fn dbg(self) -> Curr;
-    fn then<Next: 'static>(self, f: fn(Curr) -> Next) -> RecState<Curr, T, Next>;
+    fn then<Next: 'static>(self, f: fn(Curr) -> Next) -> RecState<T, Curr, Next>;
 }
-trait PrevAwareTransform<
+trait UnwrapTransform<LastState, State, Prev, Curr>
+where
     LastState: Call<Prev>,
-    State: Previous<LastState, Prev, Curr> + Call<Curr>,
-    Prev,
-    Curr,
->
+    State: Unwrapable<LastState, Prev, Curr> + Call<Curr>,
 {
     fn and<Next>(self, f: fn(Curr) -> Next) -> And<LastState, State, Prev, Curr, Next>;
 }
-struct RecState<Curr, State: Call<Curr>, Next> {
+// Structs
+struct RecState<State: Call<Curr>, Curr, Next> {
     to_get_there: State,
     go_from_here: Action<Curr, Next>,
 }
-// struct And<State, Prev, Curr, Next, F: (Fn(Prev) -> Next)> {
-//     to_get_there: State,
-//     curr_fn: F,
-//     f: PhantomData<(Prev, Curr, Next)>,
-// }
 struct And<
     LastState: Call<Prev>,
-    State: Call<Curr> + Previous<LastState, Prev, Curr>,
+    State: Call<Curr> + Unwrapable<LastState, Prev, Curr>,
     Prev,
     Curr,
     Next,
@@ -52,57 +46,51 @@ struct And<
     go_from_here: Action<Curr, Next>,
     p: PhantomData<(LastState, Prev, Curr)>,
 }
+// Call impls
 impl<LastState, Prev, Curr, State, Next> Call<Next> for And<LastState, State, Prev, Curr, Next>
 where
     LastState: Call<Prev>,
-    State: Call<Curr> + Previous<LastState, Prev, Curr>,
+    State: Call<Curr> + Unwrapable<LastState, Prev, Curr>,
 {
+    #[inline(always)]
     fn call(self) -> Next {
-        let (last_state, prev_fun) = self.to_get_there.prev();
+        let (last_state, prev_fun) = self.to_get_there.unwrap();
         (self.go_from_here)(prev_fun(last_state.call()))
     }
 }
-impl<To, State, Curr, LastState, Prev> Previous<State, Curr, To>
-    for And<LastState, State, Prev, Curr, To>
-where
-    State: Call<Curr> + Previous<LastState, Prev, Curr>,
-    LastState: Call<Prev>,
-{
-    fn prev(self) -> (State, impl (Fn(Curr) -> To)) {
-        (self.to_get_there, self.go_from_here)
-    }
-}
-impl<T, U: Call<T>, V> Call<V> for RecState<T, U, V> {
+impl<T, U: Call<T>, V> Call<V> for RecState<U, T, V> {
     fn call(self) -> V {
         (self.go_from_here)(self.to_get_there.call())
     }
 }
-impl<To> Call<To> for State<To> {
-    fn call(self) -> To {
+impl<T> Call<T> for State<T> {
+    fn call(self) -> T {
         self.initial
     }
 }
-// impl<Prev, Curr, Last, Next, F> Call<Next> for And<Last, Prev, Curr, Next, F>
-// where
-//     Last: Call<Prev>,
-//     F: (Fn(Prev) -> Next),
-// {
-//     fn call(self) -> Next {
-//         let ret = self.to_get_there.call();
-//         (self.curr_fn)(ret)
-//     }
-// }
-impl<To, State: Call<Curr>, Curr> Previous<State, Curr, To> for RecState<Curr, State, To> {
-    fn prev(self) -> (State, impl Fn(Curr) -> To) {
+// Unwrap impls
+impl<Curr, State: Call<Prev>, Prev> Unwrapable<State, Prev, Curr> for RecState<State, Prev, Curr> {
+    fn unwrap(self) -> (State, Action<Prev, Curr>) {
         (self.to_get_there, (self.go_from_here))
     }
 }
-impl<LastState, State, Prev, Curr> PrevAwareTransform<LastState, Self, Prev, Curr> for State
+impl<To, State, Curr, LastState, Prev> Unwrapable<State, Curr, To>
+    for And<LastState, State, Prev, Curr, To>
 where
+    State: Call<Curr> + Unwrapable<LastState, Prev, Curr>,
     LastState: Call<Prev>,
-    State: Call<Curr> + Previous<LastState, Prev, Curr>,
 {
-    fn and<Next>(self, f: fn(Curr) -> Next) -> And<LastState, State, Prev, Curr, Next> {
+    fn unwrap(self) -> (State, Action<Curr, To>) {
+        (self.to_get_there, self.go_from_here)
+    }
+}
+impl<PrevS, S, PrevT, T> UnwrapTransform<PrevS, Self, PrevT, T> for S
+where
+    PrevS: Call<PrevT>,
+    S: Call<T> + Unwrapable<PrevS, PrevT, T>,
+{
+    #[inline(always)]
+    fn and<Next>(self, f: fn(T) -> Next) -> And<PrevS, S, PrevT, T, Next> {
         And {
             to_get_there: self,
             go_from_here: f,
@@ -110,15 +98,16 @@ where
         }
     }
 }
-impl<Curr, T> Transform<Curr, T> for T
+impl<C, T> Transform<C, T> for T
 where
-    Curr: 'static,
-    T: Call<Curr>,
+    C: 'static,
+    T: Call<C>,
 {
-    fn dbg(self) -> Curr {
+    #[inline(always)]
+    fn dbg(self) -> C {
         self.call()
     }
-    fn then<Next: 'static>(self, f: fn(Curr) -> Next) -> RecState<Curr, T, Next> {
+    fn then<N>(self, f: fn(C) -> N) -> RecState<T, C, N> {
         RecState {
             to_get_there: self,
             go_from_here: f,
