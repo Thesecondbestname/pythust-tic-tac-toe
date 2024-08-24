@@ -2,32 +2,75 @@
 
 use std::marker::PhantomData;
 
+struct State<T> {
+    initial: T,
+}
+impl<From: 'static> State<From> {
+    const fn new(initial: From) -> Self {
+        Self { initial }
+    }
+}
+
 type Action<T, U> = fn(T) -> U;
 type BorrowedAction<T, U> = for<'a> fn(&'a T) -> U;
 trait Call<Ret> {
     fn call(self) -> Ret;
 }
-trait Transform<Curr, T: Call<Curr>> : Call<Curr> {
+trait Previous<State: Call<Prev>, Prev, Curr> {
+    fn prev(self) -> (State, impl Fn(Prev) -> Curr);
+}
+trait Transform<Curr, T: Call<Curr>>: Call<Curr> {
     fn dbg(self) -> Curr;
     fn then<Next: 'static>(self, f: fn(Curr) -> Next) -> RecState<Curr, T, Next>;
 }
-trait Previous<State, Prev, To> where State: Call<Prev>{
-    fn prev(self) -> (State, Action<Prev, To>);
+trait PrevAwareTransform<
+    LastState: Call<Prev>,
+    State: Previous<LastState, Prev, Curr> + Call<Curr>,
+    Prev,
+    Curr,
+>
+{
+    fn and<Next>(self, f: fn(Curr) -> Next) -> And<LastState, State, Prev, Curr, Next>;
 }
-trait PrevAwareTransform<Curr, To, Last: Call<Curr>> {
-    fn and<Next>(self, f: fn(&To) -> Next) -> And<Last, Curr, To, Next, impl Fn(Curr) -> Next>;
-}
-struct RecState<From, Fn: Call<From>, To> {
-    to_get_there: Fn,
-    go_from_here: Action<From, To>,
-}
-struct State<T> {
-    initial: T
-}
-struct And<State, Prev, Curr, Next, F: (Fn(Prev) -> Next)> {
+struct RecState<Curr, State: Call<Curr>, Next> {
     to_get_there: State,
-    curr_fn: F,
-    f: PhantomData<(Prev, Curr, Next)>
+    go_from_here: Action<Curr, Next>,
+}
+// struct And<State, Prev, Curr, Next, F: (Fn(Prev) -> Next)> {
+//     to_get_there: State,
+//     curr_fn: F,
+//     f: PhantomData<(Prev, Curr, Next)>,
+// }
+struct And<
+    LastState: Call<Prev>,
+    State: Call<Curr> + Previous<LastState, Prev, Curr>,
+    Prev,
+    Curr,
+    Next,
+> {
+    to_get_there: State,
+    go_from_here: Action<Curr, Next>,
+    p: PhantomData<(LastState, Prev, Curr)>,
+}
+impl<LastState, Prev, Curr, State, Next> Call<Next> for And<LastState, State, Prev, Curr, Next>
+where
+    LastState: Call<Prev>,
+    State: Call<Curr> + Previous<LastState, Prev, Curr>,
+{
+    fn call(self) -> Next {
+        let (last_state, prev_fun) = self.to_get_there.prev();
+        (self.go_from_here)(prev_fun(last_state.call()))
+    }
+}
+impl<To, State, Curr, LastState, Prev> Previous<State, Curr, To>
+    for And<LastState, State, Prev, Curr, To>
+where
+    State: Call<Curr> + Previous<LastState, Prev, Curr>,
+    LastState: Call<Prev>,
+{
+    fn prev(self) -> (State, impl (Fn(Curr) -> To)) {
+        (self.to_get_there, self.go_from_here)
+    }
 }
 impl<T, U: Call<T>, V> Call<V> for RecState<T, U, V> {
     fn call(self) -> V {
@@ -39,30 +82,39 @@ impl<To> Call<To> for State<To> {
         self.initial
     }
 }
-impl<Curr, To, Last, Next, F> Call<Next> for And<Last,Curr, To, Next, F> where Last: Call<Curr>, F: (Fn(Curr) -> Next){
-    fn call(self) -> Next {
-        let ret = self.to_get_there.call();
-        (self.curr_fn)(ret)
+// impl<Prev, Curr, Last, Next, F> Call<Next> for And<Last, Prev, Curr, Next, F>
+// where
+//     Last: Call<Prev>,
+//     F: (Fn(Prev) -> Next),
+// {
+//     fn call(self) -> Next {
+//         let ret = self.to_get_there.call();
+//         (self.curr_fn)(ret)
+//     }
+// }
+impl<To, State: Call<Curr>, Curr> Previous<State, Curr, To> for RecState<Curr, State, To> {
+    fn prev(self) -> (State, impl Fn(Curr) -> To) {
+        (self.to_get_there, (self.go_from_here))
     }
 }
-impl<From: 'static> State<From> {
-    fn new(initial: From) -> Self {
-        State {
-            initial
-        }   
-    }
-}
-impl<Curr, To, Last>  PrevAwareTransform<Curr, To, Last> for RecState<Curr, Last, To> where Last: Call<Curr> {
-    fn and<Next>(self, f: fn(&To) -> Next) -> And<Last, Curr, To, Next, impl (Fn(Curr) -> Next)> {
-        let x = move |s: Curr| f(&(self.go_from_here)(s));
+impl<LastState, State, Prev, Curr> PrevAwareTransform<LastState, Self, Prev, Curr> for State
+where
+    LastState: Call<Prev>,
+    State: Call<Curr> + Previous<LastState, Prev, Curr>,
+{
+    fn and<Next>(self, f: fn(Curr) -> Next) -> And<LastState, State, Prev, Curr, Next> {
         And {
-            to_get_there: self.to_get_there,
-            curr_fn: x,
-            f: PhantomData,
+            to_get_there: self,
+            go_from_here: f,
+            p: PhantomData,
         }
     }
 }
-impl<Curr, T> Transform<Curr, T> for T where Curr: 'static, T: Call<Curr> {
+impl<Curr, T> Transform<Curr, T> for T
+where
+    Curr: 'static,
+    T: Call<Curr>,
+{
     fn dbg(self) -> Curr {
         self.call()
     }
@@ -73,49 +125,9 @@ impl<Curr, T> Transform<Curr, T> for T where Curr: 'static, T: Call<Curr> {
         }
     }
 }
-
-mod out_of_sight_out_of_mind {
-    type TransformAction<T, U> = fn(T) -> U;
-    trait Call<Ret> {
-        fn call(self) -> Ret;
-    }
-    trait TransformType<Curr, T: Call<Curr>> : Call<Curr> {
-        fn dbg(self) -> Curr;
-        fn then<Next: 'static, Fun: (Fn(Curr) -> Next)>(self, f: fn(Curr) -> Next) -> RecState<Curr, Fun, Next>;
-        // fn and<Next: 'static>(self, f: fn(Curr) -> Next) -> RecState<Curr, T, Next>;
-        // fn until<V: 'static>(self, transformation: fn(&I) -> Option<V>) -> Until<I,Target>;
-    }
-    struct RecState<From, Fun: (Fn(From) -> To), To> {
-        to_get_there: Fun,
-        go_from_here: TransformAction<From, To>,
-    }
-    struct State<T> {
-        initial: T
-    }
-    impl<Curr, T, To>  RecState<Curr, T, To> where
-         RecState<Curr, T, To>: Call<Curr>,
-         Curr                 : 'static,
-         T                    : Call<Curr> + (Fn(Curr) -> To)
-    {
-    }
-    impl<T, U: Call<T> + (Fn(T) -> V), V> Call<V> for RecState<T, U, V> {
-        fn call(self) -> V {
-            (self.go_from_here)(self.to_get_there.call())
-        }
-    }
-    impl<To: std::fmt::Display> Call<To> for State<To> {
-        fn call(self) -> To {
-            self.initial
-        }
-    }
-    impl<From: 'static> State<From> {
-        fn new(initial: From) -> Self {
-            State {
-                initial
-            }   
-        }
-    }
-
+mod later {
+    use super::Action;
+    use super::Call;
     trait Transformation<T> {
         type Output;
         fn dbg(self) -> T;
@@ -125,10 +137,9 @@ mod out_of_sight_out_of_mind {
     }
     struct Until<From, Fn: Call<From>, To> {
         to_get_there: Fn,
-        go_from_here: TransformAction<From, To>,
-        go_if: TransformAction<From, To>,
+        go_from_here: Action<From, To>,
+        go_if: Action<From, To>,
     }
-    
 }
 
 #[cfg(test)]
@@ -136,19 +147,42 @@ mod tests {
 
     use super::*;
     #[test]
-    fn test_then(){
+    fn test_then() {
         assert_eq!(
-            State::new(
-                "Call 1"
-            ).then(|arg|{println!("{arg}"); 6}).then(|arg| {println!("{arg}"); "Call 3"}).dbg(),
-         "Call 3")
+            State::new("Call 1")
+                .then(|arg| {
+                    println!("{arg}");
+                    6
+                })
+                .then(|arg| {
+                    println!("{arg}");
+                    "Call 3"
+                })
+                .dbg(),
+            "Call 3"
+        );
+    }
+    fn add2(a: u8) -> u8 {
+        a + 2
     }
     #[test]
     fn test_and() {
-        assert_eq!(State::new(
-            print!("Hallo")
-        ).then(|_| print!("Wie")).and(|_|{ print!("Geht's?"); 0}).then(|i| --i).dbg(), 0)
+        assert_eq!(
+            State::new(0)
+                .then(add2)
+                .and(|i| {
+                    print!("Geht's?");
+                    0
+                })
+                .and(|i| {
+                    println!("Fuck yeah {}", i);
+                    "test"
+                })
+                .then(str::len)
+                .and(|_| 0)
+                .dbg(),
+            0
+        );
     }
-    fn play_around() {
-    }
+    fn play_around() {}
 }
