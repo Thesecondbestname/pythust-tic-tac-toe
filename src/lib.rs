@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
+use std::marker::PhantomData;
+
 type Action<T, U> = fn(T) -> U;
+type BorrowedAction<T, U> = for<'a> fn(&'a T) -> U;
 trait Call<Ret> {
     fn call(self) -> Ret;
 }
@@ -8,12 +11,23 @@ trait Transform<Curr, T: Call<Curr>> : Call<Curr> {
     fn dbg(self) -> Curr;
     fn then<Next: 'static>(self, f: fn(Curr) -> Next) -> RecState<Curr, T, Next>;
 }
+trait Previous<State, Prev, To> where State: Call<Prev>{
+    fn prev(self) -> (State, Action<Prev, To>);
+}
+trait PrevAwareTransform<Curr, To, Last: Call<Curr>> {
+    fn and<Next>(self, f: fn(&To) -> Next) -> And<Last, Curr, To, Next, impl Fn(Curr) -> Next>;
+}
 struct RecState<From, Fn: Call<From>, To> {
     to_get_there: Fn,
     go_from_here: Action<From, To>,
 }
 struct State<T> {
     initial: T
+}
+struct And<State, Prev, Curr, Next, F: (Fn(Prev) -> Next)> {
+    to_get_there: State,
+    curr_fn: F,
+    f: PhantomData<(Prev, Curr, Next)>
 }
 impl<T, U: Call<T>, V> Call<V> for RecState<T, U, V> {
     fn call(self) -> V {
@@ -25,11 +39,27 @@ impl<To> Call<To> for State<To> {
         self.initial
     }
 }
+impl<Curr, To, Last, Next, F> Call<Next> for And<Last,Curr, To, Next, F> where Last: Call<Curr>, F: (Fn(Curr) -> Next){
+    fn call(self) -> Next {
+        let ret = self.to_get_there.call();
+        (self.curr_fn)(ret)
+    }
+}
 impl<From: 'static> State<From> {
     fn new(initial: From) -> Self {
         State {
             initial
         }   
+    }
+}
+impl<Curr, To, Last>  PrevAwareTransform<Curr, To, Last> for RecState<Curr, Last, To> where Last: Call<Curr> {
+    fn and<Next>(self, f: fn(&To) -> Next) -> And<Last, Curr, To, Next, impl (Fn(Curr) -> Next)> {
+        let x = move |s: Curr| f(&(self.go_from_here)(s));
+        And {
+            to_get_there: self.to_get_there,
+            curr_fn: x,
+            f: PhantomData,
+        }
     }
 }
 impl<Curr, T> Transform<Curr, T> for T where Curr: 'static, T: Call<Curr> {
@@ -73,7 +103,7 @@ mod out_of_sight_out_of_mind {
             (self.go_from_here)(self.to_get_there.call())
         }
     }
-    impl<To> Call<To> for State<To> {
+    impl<To: std::fmt::Display> Call<To> for State<To> {
         fn call(self) -> To {
             self.initial
         }
@@ -113,12 +143,12 @@ mod tests {
             ).then(|arg|{println!("{arg}"); 6}).then(|arg| {println!("{arg}"); "Call 3"}).dbg(),
          "Call 3")
     }
-    // #[test]
-    // fn test_and() {
-    //     assert_eq!(State2::new(
-    //         "Call 1"
-    //     ).then(|_| {println!("yees"); "Call 2"}).dbg(), "Call 2")
-    // }
+    #[test]
+    fn test_and() {
+        assert_eq!(State::new(
+            print!("Hallo")
+        ).then(|_| print!("Wie")).and(|_|{ print!("Geht's?"); 0}).then(|i| --i).dbg(), 0)
+    }
     fn play_around() {
     }
 }
