@@ -1,5 +1,6 @@
 use super::{Action, Call, PhantomData};
 use crate::Unwrapable;
+// Trait for and
 pub trait UnwrapTransform<LastState, State, Prev, Curr>
 where
     LastState: Call<Prev>,
@@ -8,7 +9,7 @@ where
     fn and<Next>(self, f: fn(Curr) -> Next) -> And<LastState, State, Prev, Curr, Next>;
 }
 
-struct And<
+pub struct And<
     LastState: Call<Prev>,
     State: Call<Curr> + Unwrapable<LastState, Prev, Curr>,
     Prev,
@@ -40,6 +41,7 @@ where
         (self.to_get_there, self.curr_fun)
     }
 }
+// Global implementation
 impl<PrevS, S, PrevT, T> UnwrapTransform<PrevS, Self, PrevT, T> for S
 where
     PrevS: Call<PrevT>,

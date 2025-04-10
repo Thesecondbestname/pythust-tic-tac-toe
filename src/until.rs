@@ -1,55 +1,40 @@
 use crate::Action;
 use crate::Call;
+use crate::Unwrapable;
 
 type BorrowedAction<T, U> = for<'a> fn(&'a T) -> U;
-trait Repeatable<State: Call<Prev>, Prev, Curr> {
-    fn unwrap(self) -> (State, BorrowedAction<Prev, Curr>);
+// Trait for until
+pub trait RepeatableTransform<'a, Prev: Call<&'a From>, From: 'a, Curr, Next> {
+    fn until(self, a: Action<Curr, Option<Next>>) -> Until<'a, Prev, From, Curr, Next>;
 }
-pub trait RepeatableTransform<Prev: Call<From>, From, Curr, Next> {
-    fn until(self, a: Action<Curr, Option<Next>>) -> Until<Prev, From, Curr, Next>;
-}
-pub trait BorrowedTransform<Curr>: Call<Curr> + Sized {
-    fn dbg(self) -> Curr;
-    fn then<Next: 'static>(self, f: fn(&Curr) -> Next) -> BorrowedRecState<Self, Curr, Next>;
-}
-struct BorrowedRecState<State: Call<Curr>, Curr, Next> {
-    to_get_there: State,
-    go_from_here: BorrowedAction<Curr, Next>,
-}
-struct Until<Prev: Call<From>, From, Curr, Next> {
+pub struct Until<'a, Prev: Call<&'a From>, From, Curr, Next> {
     to_get_here: Prev,
-    go_from_here: BorrowedAction<From, Curr>,
+    go_from_here: fn(&'a From) -> Curr,
     go_if: Action<Curr, Option<Next>>,
 }
-impl<T, U: Call<T>, V> Call<V> for BorrowedRecState<U, T, V> {
-    fn call(self) -> V {
-        (self.go_from_here)(&self.to_get_there.call())
-    }
-}
-impl<State: Call<Curr>, Curr, Next> Repeatable<State, Curr, Next>
-    for BorrowedRecState<State, Curr, Next>
+// TODO!: This does not act like a loop. The result is not passed back into the closure, but instead is discarded.
+// This results in the same closure being called with the same arguments in an infinite loop
+impl<'a, PrevState: Call<&'a From>, Ret, Curr, From> Call<Ret>
+    for Until<'a, PrevState, From, Curr, Ret>
 {
-    fn unwrap(self) -> (State, BorrowedAction<Curr, Next>) {
-        (self.to_get_there, self.go_from_here)
-    }
-}
-impl<PrevState: Call<From>, Ret, Curr, From> Call<Ret> for Until<PrevState, From, Curr, Ret> {
     fn call(self) -> Ret {
         let state = self.to_get_here.call();
+        let mut i = None;
         loop {
-            let i = (self.go_from_here)(&state);
-            if let Some(res) = (self.go_if)(i) {
+            i = Some((self.go_from_here)(state));
+            if let Some(res) = (self.go_if)(i.unwrap()) {
                 break res;
             }
         }
     }
 }
-impl<PrevState, S, From, Curr, N> RepeatableTransform<PrevState, From, Curr, N> for S
+// Global implementation
+impl<'a, PrevState, S, From: 'a, Curr, N> RepeatableTransform<'a, PrevState, From, Curr, N> for S
 where
-    S: Repeatable<PrevState, From, Curr>,
-    PrevState: Call<From>,
+    S: Unwrapable<PrevState, &'a From, Curr>,
+    PrevState: Call<&'a From>,
 {
-    fn until(self, a: Action<Curr, Option<N>>) -> Until<PrevState, From, Curr, N> {
+    fn until(self, a: Action<Curr, Option<N>>) -> Until<'a, PrevState, From, Curr, N> {
         let (last_state, last_fun) = self.unwrap();
         Until {
             to_get_here: last_state,
@@ -58,24 +43,16 @@ where
         }
     }
 }
-impl<Curr, S: Call<Curr>> BorrowedTransform<Curr> for S {
-    fn dbg(self) -> Curr {
-        self.call()
-    }
-
-    fn then<Next: 'static>(self, f: fn(&Curr) -> Next) -> BorrowedRecState<Self, Curr, Next> {
-        BorrowedRecState {
-            to_get_there: self,
-            go_from_here: f,
-        }
-    }
-}
-
 #[test]
 fn test_until() {
+    use crate::then::Transform;
     use crate::State;
-    let s = State::new(0).then(|x| x + 40).and(|a| {
-        println!("{a}");
-        a
-    });
+    let s = State::new(&0)
+        .then(|x| {
+            println!("{x}");
+            x + 1
+        })
+        .until(|a| (a == 4).then_some(a))
+        .dbg();
+    panic!("{}", s);
 }

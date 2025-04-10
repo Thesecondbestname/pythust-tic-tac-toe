@@ -1,15 +1,28 @@
+#![feature(closure_lifetime_binder)]
 #![allow(dead_code)]
+#![allow(private_interfaces)]
 mod and;
+mod test;
 mod then;
 mod until;
 
 use std::marker::PhantomData;
 
+mod Test {
+    pub trait ToUnit<T> {
+        fn tounit(&self) -> ();
+    }
+    impl<T> ToUnit<Self> for T {
+        fn tounit(&self) -> () {
+            ()
+        }
+    }
+}
 struct State<T> {
     initial: T,
 }
-impl<From: 'static> State<From> {
-    const fn new(initial: From) -> Self {
+impl<T> State<T> {
+    const fn new(initial: T) -> Self {
         Self { initial }
     }
 }
@@ -18,7 +31,6 @@ type Action<T, U> = fn(T) -> U;
 trait Call<Ret> {
     fn call(self) -> Ret;
 }
-
 /// Provides a tuple of (State, Action<Prev, Curr>)
 trait Unwrapable<State: Call<Prev>, Prev, Curr> {
     fn unwrap(self) -> (State, Action<Prev, Curr>);
@@ -34,7 +46,7 @@ impl<T> Call<T> for State<T> {
 #[cfg(test)]
 mod tests {
 
-    use crate::{and::UnwrapTransform, then::Transform};
+    use crate::{and::UnwrapTransform, then::Transform, until::RepeatableTransform};
 
     use super::*;
     #[test]
@@ -76,8 +88,9 @@ mod tests {
         );
     }
     fn play_around() {
-        State::new(3)
+        State::new(&3)
             .then(|a| a + 5)
             .until(|a| (a > 5).then_some(a))
+            .dbg();
     }
 }
